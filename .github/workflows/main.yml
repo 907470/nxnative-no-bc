@@ -61,10 +61,10 @@ jobs:
 
       - name: Restore Extracted Game Files Cache
         id: cache-game
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: Games/PreparedGame
-          key: nxnative-game-cache-v2-${{ github.event.inputs.game_target }}
+          key: nxnative-game-cache-v3-${{ github.event.inputs.game_target }}
 
       - name: Download and Prepare Game Files
         if: steps.cache-game.outputs.cache-hit != 'true'
@@ -97,10 +97,10 @@ jobs:
 
       - name: Save Extracted Game Files Cache (Even on Failure)
         if: always() && steps.cache-game.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: Games/PreparedGame
-          key: nxnative-game-cache-v2-${{ github.event.inputs.game_target }}
+          key: nxnative-game-cache-v3-${{ github.event.inputs.game_target }}
 
       - name: Skip Download on Cache Hit
         if: steps.cache-game.outputs.cache-hit == 'true'
