@@ -1,0 +1,155 @@
+name: Build nxnative IPA aria2
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_target:
+        description: 'Exact filename or folder in RomM (e.g. Paper Mario.7z or MarioKart)'
+        required: true
+        default: 'PaperMario.7z'
+      tunnel_url:
+        description: 'Active Cloudflare Tunnel Root URL (e.g. https://xxxx.trycloudflare.com)'
+        required: true
+      device_type:
+        description: 'Target Device / Architecture'
+        required: true
+        default: 'iphone14pro_a16'
+        type: choice
+        options:
+          - iphone15_plus      # iPhone 15 Pro+, iPads, Macs (Official repo)
+          - iphone14pro_a16    # iPhone 14 Pro / A16 Bionic (Compatibility fork with BC-to-ASTC)
+
+jobs:
+  build:
+    runs-on: macos-15 # Pinned to macos-15 for reliable Xcode 16 toolchain and SDK matching
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: '${{ github.repository_owner }}/nxnative-no-bc'
+          ref: 'no-bc'
+          submodules: recursive
+
+      - name: Select Xcode Version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.0'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install System Dependencies via Homebrew
+        run: |
+          brew install xcodegen zstd glslang p7zip wget spirv-cross aria2
+          brew install --cask dotnet-sdk
+
+      - name: Install Python Dependencies & nsz
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install lz4 capstone fonttools nsz "backports.zstd; python_version < '3.14'"
+
+      - name: Restore prod.keys from GitHub Secrets
+        run: |
+          mkdir -p ~/.switch
+          echo "${{ secrets.PROD_KEYS }}" > ~/.switch/prod.keys
+          echo "Checking prod.keys setup:"
+          ls -la ~/.switch/prod.keys
+
+      - name: Restore Extracted Game Files Cache
+        id: cache-game
+        uses: actions/cache/restore@v4
+        with:
+          path: Games/PreparedGame
+          key: nxnative-game-cache-${{ github.event.inputs.game_target }}
+
+      - name: Download and Prepare Game Files
+        if: steps.cache-game.outputs.cache-hit != 'true'
+        run: |
+          RAW_TARGET="${{ github.event.inputs.game_target }}"
+          CLEAN_TUNNEL_URL="${{ github.event.inputs.tunnel_url }}"
+          CLEAN_TUNNEL_URL="${CLEAN_TUNNEL_URL%/}"
+          
+          # Automatically URL-encode the filename/target so spaces become %20 safely
+          ENCODED_TARGET=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$RAW_TARGET")
+          
+          if [[ "$RAW_TARGET" == *.7z ]] || [[ "$RAW_TARGET" == *.zip ]] || [[ "$RAW_TARGET" == *.rar ]]; then
+            WORK_DIR="Games/PreparedGame"
+            mkdir -p "$WORK_DIR"
+            
+            FILE_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET"
+            echo "Fetching archive from local server using aria2: $FILE_URL"
+            
+            aria2c -c -s16 -j16 --min-split-size=1M "$FILE_URL" -d "$WORK_DIR" -o "game_download.archive"
+            
+            echo "Extracting archive..."
+            7z x "$WORK_DIR/game_download.archive" -o"$WORK_DIR/" -y || unzip -q "$WORK_DIR/game_download.archive" -d "$WORK_DIR/"
+            rm -f "$WORK_DIR/game_download.archive"
+            
+            find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
+            
+            echo "=== Final contents of $WORK_DIR ==="
+            ls -la "$WORK_DIR"
+          else
+            WORK_DIR="Games/$RAW_TARGET"
+            mkdir -p "$WORK_DIR"
+            
+            FOLDER_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET/"
+            echo "Recursively downloading folder from local server: $FOLDER_URL"
+            
+            wget -r -np -nH --cut-dirs=1 --reject "index.html*" -P "$WORK_DIR" "$FOLDER_URL"
+            find "$WORK_DIR" -name "index.html*" -delete
+            
+            find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
+            
+            echo "=== Final contents of $WORK_DIR ==="
+            ls -la "$WORK_DIR"
+          fi
+
+      - name: Save Extracted Game Files Cache (Even on Failure)
+        if: always() && steps.cache-game.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: Games/PreparedGame
+          key: nxnative-game-cache-${{ github.event.inputs.game_target }}
+
+      - name: Skip Download on Cache Hit
+        if: steps.cache-game.outputs.cache-hit == 'true'
+        run: |
+          echo "Cache hit! Skipping download and extraction. Using pre-cached game files."
+          ls -la Games/PreparedGame
+
+      - name: Cache Compiled iOS Shaders
+        uses: actions/cache@v4
+        with:
+          path: Games/PreparedGame/*_build/shader/ios/
+          key: nxnative-shaders-${{ github.event.inputs.game_target }}-${{ hashFiles('Games/PreparedGame/**/*.nsp', 'Games/PreparedGame/**/*.xci') }}
+          restore-keys: |
+            nxnative-shaders-${{ github.event.inputs.game_target }}-
+            nxnative-shaders-
+
+      - name: Run Build Script & Apply Patches
+        run: |
+          echo "Patching Launcher.swift compatibility error..."
+          find dm/ios/Sources -name "Launcher.swift" -exec sed -i '' 's/glassProminent/automatic/g' {} +
+          
+          echo "Patching DmGamepad.m motion property error..."
+          find dm/ios/Sources -name "DmGamepad.m" -exec sed -i '' 's/deviceMotionBody/deviceMotion/g' {} +
+
+          echo "Patching unsupported apple-a18 CPU flags to apple-a16 across all source and project files..."
+          find . -type f \( -name "*.swift" -o -name "*.m" -o -name "*.xcodeproj" -o -name "*.pbxproj" -o -name "*.json" -o -name "*.py" -o -name "Makefile" \) -exec sed -i '' 's/apple-a18/apple-a16/g' {} + || true
+          
+          echo "Running build script on prepared directory..."
+          python3 scripts/build_ipa_from_nsp.py Games/PreparedGame -k ~/.switch/prod.keys --allow-other-metal
+
+      - name: Upload Generated Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-nxnative-output
+          retention-days: 7
+          path: |
+            Games/**/*.ipa
+            Games/**/*.json
+            Games/**/*.zip
