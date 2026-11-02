@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       game_target:
-        description: 'Exact filename or folder in RomM (e.g. Paper Mario.7z or MarioKart)'
+        description: 'Exact filename or folder in RomM or Drive ID reference'
         required: true
-        default: 'PaperMario.7z'
+        default: 'SuperMario'
       tunnel_url:
-        description: 'Active Cloudflare Tunnel Root URL (e.g. https://xxxx.trycloudflare.com)'
+        description: 'Direct Google Drive URL (with &confirm=t) or Tunnel URL'
         required: true
+        default: 'https://drive.google.com/uc?export=download&confirm=t&id=1_O5NFIohfWaU8X7LvbKjodeKJNauII0c'
       device_type:
         description: 'Target Device / Architecture'
         required: true
@@ -63,7 +64,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: Games/PreparedGame
-          key: nxnative-game-cache-${{ github.event.inputs.game_target }}
+          key: nxnative-game-cache-v2-${{ github.event.inputs.game_target }}
 
       - name: Download and Prepare Game Files
         if: steps.cache-game.outputs.cache-hit != 'true'
@@ -72,48 +73,34 @@ jobs:
           CLEAN_TUNNEL_URL="${{ github.event.inputs.tunnel_url }}"
           CLEAN_TUNNEL_URL="${CLEAN_TUNNEL_URL%/}"
           
-          # Automatically URL-encode the filename/target so spaces become %20 safely
           ENCODED_TARGET=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$RAW_TARGET")
           
-          if [[ "$RAW_TARGET" == *.7z ]] || [[ "$RAW_TARGET" == *.zip ]] || [[ "$RAW_TARGET" == *.rar ]]; then
-            WORK_DIR="Games/PreparedGame"
-            mkdir -p "$WORK_DIR"
-            
-            FILE_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET"
-            echo "Fetching archive from local server using aria2: $FILE_URL"
-            
-            aria2c -c -s16 -j16 --min-split-size=1M "$FILE_URL" -d "$WORK_DIR" -o "game_download.archive"
-            
-            echo "Extracting archive..."
-            7z x "$WORK_DIR/game_download.archive" -o"$WORK_DIR/" -y || unzip -q "$WORK_DIR/game_download.archive" -d "$WORK_DIR/"
-            rm -f "$WORK_DIR/game_download.archive"
-            
-            find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
-            
-            echo "=== Final contents of $WORK_DIR ==="
-            ls -la "$WORK_DIR"
+          WORK_DIR="Games/PreparedGame"
+          mkdir -p "$WORK_DIR"
+          
+          if [[ "$CLEAN_TUNNEL_URL" == *drive.google.com* ]]; then
+            FILE_URL="$CLEAN_TUNNEL_URL"
           else
-            WORK_DIR="Games/$RAW_TARGET"
-            mkdir -p "$WORK_DIR"
-            
-            FOLDER_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET/"
-            echo "Recursively downloading folder from local server: $FOLDER_URL"
-            
-            wget -r -np -nH --cut-dirs=1 --reject "index.html*" -P "$WORK_DIR" "$FOLDER_URL"
-            find "$WORK_DIR" -name "index.html*" -delete
-            
-            find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
-            
-            echo "=== Final contents of $WORK_DIR ==="
-            ls -la "$WORK_DIR"
+            FILE_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET"
           fi
+          
+          echo "Fetching archive using aria2: $FILE_URL"
+          aria2c -c -s16 -j16 --min-split-size=1M "$FILE_URL" -d "$WORK_DIR" -o "game_download.archive"
+          
+          echo "Extracting archive..."
+          7z x "$WORK_DIR/game_download.archive" -o"$WORK_DIR/" -y || unzip -q "$WORK_DIR/game_download.archive" -d "$WORK_DIR/"
+          
+          find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
+          
+          echo "=== Final contents of $WORK_DIR ==="
+          ls -la "$WORK_DIR"
 
       - name: Save Extracted Game Files Cache (Even on Failure)
         if: always() && steps.cache-game.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: Games/PreparedGame
-          key: nxnative-game-cache-${{ github.event.inputs.game_target }}
+          key: nxnative-game-cache-v2-${{ github.event.inputs.game_target }}
 
       - name: Skip Download on Cache Hit
         if: steps.cache-game.outputs.cache-hit == 'true'
