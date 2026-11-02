@@ -1,4 +1,4 @@
-name: Build nxnative IPA aria2
+name: Build nxnative no-bc IPA aria2
 
 on:
   workflow_dispatch:
@@ -59,15 +59,7 @@ jobs:
           echo "Checking prod.keys setup:"
           ls -la ~/.switch/prod.keys
 
-      - name: Restore Extracted Game Files Cache
-        id: cache-game
-        uses: actions/cache/restore@v4
-        with:
-          path: Games/PreparedGame
-          key: nxnative-game-cache-v3-${{ github.event.inputs.game_target }}
-
       - name: Download and Prepare Game Files
-        if: steps.cache-game.outputs.cache-hit != 'true'
         run: |
           RAW_TARGET="${{ github.event.inputs.game_target }}"
           CLEAN_TUNNEL_URL="${{ github.event.inputs.tunnel_url }}"
@@ -76,6 +68,7 @@ jobs:
           ENCODED_TARGET=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$RAW_TARGET")
           
           WORK_DIR="Games/PreparedGame"
+          rm -rf "$WORK_DIR"
           mkdir -p "$WORK_DIR"
           
           if [[ "$CLEAN_TUNNEL_URL" == *drive.google.com* ]]; then
@@ -89,33 +82,12 @@ jobs:
           
           echo "Extracting archive..."
           7z x "$WORK_DIR/game_download.archive" -o"$WORK_DIR/" -y || unzip -q "$WORK_DIR/game_download.archive" -d "$WORK_DIR/"
+          rm -f "$WORK_DIR/game_download.archive"
           
           find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
           
           echo "=== Final contents of $WORK_DIR ==="
           ls -la "$WORK_DIR"
-
-      - name: Save Extracted Game Files Cache (Even on Failure)
-        if: always() && steps.cache-game.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: Games/PreparedGame
-          key: nxnative-game-cache-v3-${{ github.event.inputs.game_target }}
-
-      - name: Skip Download on Cache Hit
-        if: steps.cache-game.outputs.cache-hit == 'true'
-        run: |
-          echo "Cache hit! Skipping download and extraction. Using pre-cached game files."
-          ls -la Games/PreparedGame
-
-      - name: Cache Compiled iOS Shaders
-        uses: actions/cache@v4
-        with:
-          path: Games/PreparedGame/*_build/shader/ios/
-          key: nxnative-shaders-${{ github.event.inputs.game_target }}-${{ hashFiles('Games/PreparedGame/**/*.nsp', 'Games/PreparedGame/**/*.xci') }}
-          restore-keys: |
-            nxnative-shaders-${{ github.event.inputs.game_target }}-
-            nxnative-shaders-
 
       - name: Run Build Script & Apply Patches
         run: |
