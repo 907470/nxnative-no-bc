@@ -123,6 +123,7 @@ private struct LauncherView: View {
                             }
                         }
                     }
+                    CheatsSection()
                     Section {
                         Button("Reset to tested defaults") { m.reset() }
                             .disabled(!m.changed)
@@ -178,6 +179,7 @@ public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @c
         guard let h = host else { return }
         host = nil
         model.apply()
+        CheatsSection.applySaved()   // the cheat switches go into the environment before the game starts
         h.dismiss(animated: false) { done() }
     }
     let h = UIHostingController(rootView: view)

@@ -22,6 +22,8 @@ const char *front_ios_boot_message(void);   // main.m: why a build that keeps th
 const char *front_ios_device_check(void);   // main.m: why this device cannot run the games (its GPU has no BC textures; NULL = supported); makes the first Metal device
 bool dm_show_launcher(void *view_controller, void (*done)(void));   // Launcher.swift: false = no launcher (no dm/launcher.json, or DM_LAUNCHER=0)
 
+void dm_cheats_after_launcher(void);   // hle_cheats.c: loads the cheat file once the settings screen has written it (DM_CHEATS_DEFER)
+
 static CAMetalLayer *g_layer;
 static void front_ios_power_watch(void);
 static void front_ios_audio_watch(void);
@@ -113,6 +115,7 @@ static void launcher_done(void) { [g_root startGame]; }
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     tv_attach();   // a TV connected while the launcher showed
+    dm_cheats_after_launcher();
     front_ios_boot();
 }
 - (void)viewDidLayoutSubviews {
