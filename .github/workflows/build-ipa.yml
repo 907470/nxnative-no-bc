@@ -16,9 +16,9 @@ on:
         required: false
         default: ''
       tunnel_url:
-        description: 'Google Drive share/download URL, or the tunnel base URL'
-        required: true
-        default: 'https://drive.google.com/uc?export=download&confirm=t&id=1_O5NFIohfWaU8X7LvbKjodeKJNauII0c'
+        description: 'Tunnel base URL or Google Drive link. LEAVE EMPTY to use the last one the workflow saved in .github/tunnel-url.txt'
+        required: false
+        default: ''
       device_type:
         description: 'Target device / architecture'
         required: true
@@ -51,7 +51,7 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  contents: write   # only to save the tunnel URL (.github/tunnel-url.txt) after a download from a new one
 
 concurrency:
   group: build-ipa-${{ github.ref }}
@@ -77,6 +77,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Pick the tunnel URL
+        id: tunnel
+        env:
+          INPUT_URL: ${{ inputs.tunnel_url }}
+        run: |
+          set -euo pipefail
+          trim() { printf '%s' "$1" | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'; }
+          url="$(trim "$INPUT_URL")"; from="the field"
+          if [ -z "$url" ]; then
+            [ -f .github/tunnel-url.txt ] || { echo "::error::tunnel_url is empty and .github/tunnel-url.txt does not exist"; exit 1; }
+            url="$(trim "$(grep -v '^[[:space:]]*#' .github/tunnel-url.txt | head -n1)")"; from=".github/tunnel-url.txt"
+          fi
+          if [[ ! "$url" =~ ^https?://[^[:space:]]+$ ]]; then
+            echo "::error::The tunnel URL must be one full http(s):// address, but it is: '$url' (from $from)"; exit 1
+          fi
+          echo "Tunnel URL from $from"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Free up disk space
         run: |
@@ -143,7 +161,7 @@ jobs:
         id: gamekey
         env:
           GAME_TARGET: ${{ inputs.game_target }}
-          TUNNEL_URL: ${{ inputs.tunnel_url }}
+          TUNNEL_URL: ${{ steps.tunnel.outputs.url }}
         run: |
           set -euo pipefail
           h=$(printf '%s|%s' "$GAME_TARGET" "$TUNNEL_URL" | shasum -a 256 | cut -c1-16)
@@ -160,7 +178,7 @@ jobs:
         if: steps.cache-game.outputs.cache-hit != 'true'
         env:
           GAME_TARGET: ${{ inputs.game_target }}
-          TUNNEL_URL: ${{ inputs.tunnel_url }}
+          TUNNEL_URL: ${{ steps.tunnel.outputs.url }}
         run: |
           set -euo pipefail
           TUNNEL_URL="$(printf '%s' "$TUNNEL_URL" | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
@@ -280,6 +298,27 @@ jobs:
             exit 1
           fi
 
+      - name: Remember the tunnel URL
+        # A download from a new tunnel URL is saved for the next run's empty field. Never fails the build (a busy branch, or branch protection).
+        if: steps.cache-game.outputs.cache-hit != 'true' && !contains(steps.tunnel.outputs.url, 'drive.google.com')
+        continue-on-error: true
+        env:
+          URL: ${{ steps.tunnel.outputs.url }}
+          GAME_TARGET: ${{ inputs.game_target }}
+          REF: ${{ github.ref_name }}
+          PUSH_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          cur="$(grep -v '^[[:space:]]*#' .github/tunnel-url.txt 2>/dev/null | head -n1 | tr -d '\r' || true)"
+          if [ "$cur" = "$URL" ]; then echo "Already saved"; exit 0; fi
+          printf '%s\n%s\n' "# The tunnel URL the build workflow uses when its tunnel_url field is left empty. The workflow rewrites this after a download from a new URL (history: tunnel-url-history.log)." "$URL" > .github/tunnel-url.txt
+          printf '%s  %s  %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$URL" "$GAME_TARGET" >> .github/tunnel-url-history.log
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/tunnel-url.txt .github/tunnel-url-history.log
+          git commit -q -m "Remember tunnel URL for the next run"
+          git push "$PUSH_URL" "HEAD:refs/heads/$REF" || { git pull -q --rebase "$PUSH_URL" "$REF" && git push "$PUSH_URL" "HEAD:refs/heads/$REF"; }
+          echo "Saved $URL"
+
       - name: Measure the downloaded game
         id: gamesize
         if: steps.cache-game.outputs.cache-hit != 'true'
@@ -310,7 +349,7 @@ jobs:
         if: inputs.shader_seed != ''
         env:
           SHADER_SEED: ${{ inputs.shader_seed }}
-          TUNNEL_URL: ${{ inputs.tunnel_url }}
+          TUNNEL_URL: ${{ steps.tunnel.outputs.url }}
         run: |
           set -euo pipefail
           if [[ "$SHADER_SEED" == https://* ]]; then
