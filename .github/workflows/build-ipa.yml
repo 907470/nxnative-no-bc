@@ -164,7 +164,10 @@ jobs:
           TUNNEL_URL: ${{ steps.tunnel.outputs.url }}
         run: |
           set -euo pipefail
-          h=$(printf '%s|%s' "$GAME_TARGET" "$TUNNEL_URL" | shasum -a 256 | cut -c1-16)
+          # The game's name decides the key; a tunnel address changes at every start, and keying on it would throw away the game and shader caches
+          # a long build (Pokopia's shaders take many runs) resumes from. A Google Drive link is the game's identity, so it still counts.
+          src=""; [[ "$TUNNEL_URL" == *drive.google.com* ]] && src="$TUNNEL_URL"
+          h=$(printf '%s|%s' "$GAME_TARGET" "$src" | shasum -a 256 | cut -c1-16)
           echo "key=$h" >> "$GITHUB_OUTPUT"
 
       - name: Restore downloaded game files
@@ -388,6 +391,9 @@ jobs:
           fi
 
       - name: Build the IPA
+        # A hosted job is stopped at 6 hours for good. Stopping this step sooner leaves the shader cache and bundle steps below their normal time to save what
+        # was compiled (cas.db keeps every finished shader, so the next run carries on); stopped at the job limit they would get a few minutes.
+        timeout-minutes: 270
         env:
           ALLOW_OTHER_METAL: ${{ inputs.allow_other_metal }}
           ROMFS_MODE: ${{ inputs.romfs }}
