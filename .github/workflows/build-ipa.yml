@@ -40,6 +40,10 @@ on:
         required: true
         default: true
         type: boolean
+      shader_from_run:
+        description: 'Optional: the run number-id (the long number in the run page URL) of an earlier run of THIS repo whose <game>-shaders-N artifact to continue from. Fastest way to resume a long shader build'
+        required: false
+        default: ''
       shader_seed:
         description: 'Optional: a shaders .tar.zst from an earlier run, as a full https:// URL or a file name on the tunnel (not for Google Drive). Restored before the build; the build re-makes whatever no longer matches'
         required: false
@@ -51,6 +55,7 @@ on:
         type: boolean
 
 permissions:
+  actions: read     # to download an earlier run's shader bundle (shader_from_run)
   contents: write   # only to save the tunnel URL (.github/tunnel-url.txt) after a download from a new one
 
 concurrency:
@@ -348,14 +353,24 @@ jobs:
           key: shader-${{ steps.gamekey.outputs.key }}-${{ github.run_id }}
           restore-keys: shader-${{ steps.gamekey.outputs.key }}-
 
-      - name: Restore shaders from your own file (shader_seed)
-        if: inputs.shader_seed != ''
+      - name: Restore shaders from an earlier run or your own file
+        if: inputs.shader_seed != '' || inputs.shader_from_run != ''
         env:
           SHADER_SEED: ${{ inputs.shader_seed }}
+          SHADER_FROM_RUN: ${{ inputs.shader_from_run }}
           TUNNEL_URL: ${{ steps.tunnel.outputs.url }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ "$SHADER_SEED" == https://* ]]; then
+          seed="$RUNNER_TEMP/shader-seed.tar.zst"
+          if [ -n "$SHADER_FROM_RUN" ]; then
+            [[ "$SHADER_FROM_RUN" =~ ^[0-9]+$ ]] || { echo "::error::shader_from_run must be only the run's number (the long number in its URL), not '$SHADER_FROM_RUN'"; exit 1; }
+            rm -rf "$RUNNER_TEMP/shader-dl"; mkdir -p "$RUNNER_TEMP/shader-dl"
+            gh run download "$SHADER_FROM_RUN" -R "$GITHUB_REPOSITORY" --pattern '*-shaders-*' -D "$RUNNER_TEMP/shader-dl"
+            found=$(find "$RUNNER_TEMP/shader-dl" -name '*.tar.zst' | head -n1)
+            [ -n "$found" ] || { echo "::error::Run $SHADER_FROM_RUN has no *-shaders-* artifact (kept 14 days, and only runs with bundle_shaders on make one)"; exit 1; }
+            mv "$found" "$seed"; rm -rf "$RUNNER_TEMP/shader-dl"
+          elif [[ "$SHADER_SEED" == https://* ]]; then
             url="$SHADER_SEED"
           elif [[ "$TUNNEL_URL" == https://* && "$TUNNEL_URL" != *drive.google.com* ]]; then
             enc=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$SHADER_SEED")
@@ -363,8 +378,9 @@ jobs:
           else
             echo "::error::shader_seed must be a full https:// URL, or a file name on a tunnel (tunnel_url is a Google Drive link or not https)"; exit 1
           fi
-          seed="$RUNNER_TEMP/shader-seed.tar.zst"
+          if [ -z "$SHADER_FROM_RUN" ]; then
           aria2c -c -x4 -s4 --max-tries=5 --retry-wait=10 -d "$RUNNER_TEMP" -o shader-seed.tar.zst "$url"
+          fi
           zstd -t "$seed"
           # Only <id>_build/shader/... may be inside: nothing else of the work folder (or outside it) can be overwritten
           if zstd -dc "$seed" | tar -tf - | grep -vE '^(\./)?[A-Za-z0-9._-]+_build/shader(/|$)'; then
@@ -410,6 +426,14 @@ jobs:
           DATA=/System/Volumes/Data; [ -d "$DATA" ] || DATA=/
           df -h "$DATA" | awk 'NR==2{print "free: "$4" of "$2}'
           du -sh "$WORK_DIR"/* "$WORK_DIR"/*_build/* 2>/dev/null | sort -h | tail -8 || true
+
+      - name: Stop anything the build left running
+        # After a step timeout the compilers can still be running; they kept writing cas.db while the cache was packed ("file changed as we read it"), and the save failed.
+        if: always()
+        run: |
+          pkill -f 'PreparedGame' || true
+          sleep 5
+          pgrep -fl 'PreparedGame' || echo "nothing left running"
 
       - name: Save compiled shaders
         if: always()
