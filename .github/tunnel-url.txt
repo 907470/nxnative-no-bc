@@ -1,2 +1,2 @@
 # The tunnel URL the build workflow uses when its tunnel_url field is left empty. The workflow rewrites this after a download from a new URL (history: tunnel-url-history.log).
-https://premiere-mortgage-goal-copper.trycloudflare.com
+https://treat-fare-believe-chris.trycloudflare.com
