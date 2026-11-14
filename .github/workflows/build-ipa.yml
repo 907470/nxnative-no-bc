@@ -223,7 +223,9 @@ jobs:
           if [[ "$TUNNEL_URL" == *drive.google.com* ]]; then
             MODE=archive
             echo "Downloading from Google Drive with gdown"
-            gdown --fuzzy "$TUNNEL_URL" -O "$ARCHIVE"
+            # gdown 6 dropped --fuzzy (it reads a share link by itself now, and rejects the flag); older versions need it for /file/d/<id>/view links
+            fuzzy=""; if gdown --help 2>&1 | grep -q -- '--fuzzy'; then fuzzy="--fuzzy"; fi
+            gdown $fuzzy "$TUNNEL_URL" -O "$ARCHIVE"
           elif [[ "$GAME_TARGET" == */ || ! "$TARGET" =~ \.(7z|zip|rar|tar|gz|xz|zst|nsp|nsz|xci|xcz|nup)$ ]]; then
             MODE=directory
             echo "Downloading the folder '$TARGET' from the tunnel's directory listing"
@@ -406,6 +408,22 @@ jobs:
             echo "::error::apple-a18 is still present after patching"; exit 1
           fi
 
+      - name: Report what the shader cache holds (before the build)
+        if: always()
+        run: |
+          python3 -I - <<'PY' || true
+          import glob, os, sqlite3
+          for db in glob.glob(os.environ['WORK_DIR'] + '/*_build/shader/cache/cas.db'):
+              sz = lambda f: os.path.getsize(f) / 2**20 if os.path.exists(f) else 0
+              print(f'{db}: {sz(db):,.0f} MiB, wal {sz(db + "-wal"):,.0f} MiB')
+              try:
+                  c = sqlite3.connect(db, timeout=60)
+                  for k, n in c.execute("select substr(name, 1, instr(name || '/', '/') - 1) k, count(*) from entry group by k order by 2 desc limit 12"): print(f'  entry {k}: {n:,}')
+                  for t, n in c.execute("select substr(name, 1, instr(name, '/') - 1 + 0) || '/' || substr(substr(name, instr(name, '/') + 1), 1, instr(substr(name, instr(name, '/') + 1) || '/', '/') - 1), count(*) from entry where name like 'metallib/%' group by 1"): print(f'  {t}: {n:,}')
+                  n, b = c.execute('select count(*), coalesce(sum(length(data)), 0) from blob').fetchone(); print(f'  blobs: {n:,}, {b / 2**20:,.0f} MiB')
+              except Exception as e: print('  could not read it:', e)
+          PY
+
       - name: Build the IPA
         # A hosted job is stopped at 6 hours for good. Stopping this step sooner leaves the shader cache and bundle steps below their normal time to save what
         # was compiled (cas.db keeps every finished shader, so the next run carries on); stopped at the job limit they would get a few minutes.
@@ -434,6 +452,22 @@ jobs:
           pkill -f 'PreparedGame' || true
           sleep 5
           pgrep -fl 'PreparedGame' || echo "nothing left running"
+
+      - name: Report what the shader cache holds (after the build)
+        if: always()
+        run: |
+          python3 -I - <<'PY' || true
+          import glob, os, sqlite3
+          for db in glob.glob(os.environ['WORK_DIR'] + '/*_build/shader/cache/cas.db'):
+              sz = lambda f: os.path.getsize(f) / 2**20 if os.path.exists(f) else 0
+              print(f'{db}: {sz(db):,.0f} MiB, wal {sz(db + "-wal"):,.0f} MiB')
+              try:
+                  c = sqlite3.connect(db, timeout=60)
+                  for k, n in c.execute("select substr(name, 1, instr(name || '/', '/') - 1) k, count(*) from entry group by k order by 2 desc limit 12"): print(f'  entry {k}: {n:,}')
+                  for t, n in c.execute("select substr(name, 1, instr(name, '/') - 1 + 0) || '/' || substr(substr(name, instr(name, '/') + 1), 1, instr(substr(name, instr(name, '/') + 1) || '/', '/') - 1), count(*) from entry where name like 'metallib/%' group by 1"): print(f'  {t}: {n:,}')
+                  n, b = c.execute('select count(*), coalesce(sum(length(data)), 0) from blob').fetchone(); print(f'  blobs: {n:,}, {b / 2**20:,.0f} MiB')
+              except Exception as e: print('  could not read it:', e)
+          PY
 
       - name: Save compiled shaders
         if: always()
