@@ -281,9 +281,21 @@ jobs:
               echo "::error::The download is an HTML page, not an archive (bad link, or Google Drive quota)"
               exit 1
             fi
-            echo "Extracting"
-            7z x "$ARCHIVE" -o"$WORK_DIR/" -y || unzip -q "$ARCHIVE" -d "$WORK_DIR/"
-            rm -f "$ARCHIVE"
+            # A link can point straight at the game file (a .nup, .nsp or .xci) and not at an archive: its first bytes say which
+            KIND=$(python3 -I - "$ARCHIVE" <<'PY'
+          import sys
+          with open(sys.argv[1], 'rb') as f: h = f.read(0x104)
+          print('nup' if h[:3] == b'NUP' else 'nsp' if h[:4] == b'PFS0' else 'xci' if h[0x100:0x104] == b'HEAD' else '')
+          PY
+            )
+            if [ -n "$KIND" ]; then
+              echo "The download is a .$KIND game file, not an archive"
+              mv "$ARCHIVE" "$WORK_DIR/game.$KIND"; MODE=file
+            else
+              echo "Extracting"
+              7z x "$ARCHIVE" -o"$WORK_DIR/" -y || unzip -q "$ARCHIVE" -d "$WORK_DIR/"
+              rm -f "$ARCHIVE"
+            fi
           fi
 
           if [ "$MODE" = directory ]; then
