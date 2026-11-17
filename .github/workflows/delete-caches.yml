@@ -1,0 +1,71 @@
+name: Delete cache entries
+
+# Lists or deletes this repo's GitHub Actions caches (game files, compiled shaders, ...).
+# Start it from the Actions tab. "list" only shows what is there; every other mode deletes.
+run-name: "Caches: ${{ inputs.mode }}${{ inputs.match != '' && format(' ({0})', inputs.match) || '' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to do"
+        type: choice
+        default: list
+        options:
+          - list
+          - delete matching
+          - delete all game-files caches
+          - delete all shader caches
+          - delete everything
+      match:
+        description: "For 'delete matching': text the cache key must contain (e.g. game-v1-1a4cb5b68d9f751b, or part of a key). Leave empty for the other modes."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  caches:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: List, then delete
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MODE: ${{ inputs.mode }}
+          MATCH: ${{ inputs.match }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$REPO/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | [.id, .key, .ref, .size_in_bytes, .last_accessed_at] | @tsv' > caches.tsv || true
+          total=$(wc -l < caches.tsv | tr -d ' ')
+          echo "The repo holds $total cache entr$([ "$total" = 1 ] && echo y || echo ies):"
+          awk -F'\t' '{printf "%-12s %8.0f MB  %-28s %s  (last used %s)\n", $1, $4/1048576, $3, $2, $5}' caches.tsv | sort -k4
+          awk -F'\t' '{s+=$4} END {printf "Total: %.2f GB of the 10 GB allowed\n", s/1073741824}' caches.tsv
+
+          case "$MODE" in
+            list) echo "Mode is list: nothing deleted."; exit 0 ;;
+            "delete matching")
+              [ -n "$MATCH" ] || { echo "::error::'delete matching' needs the match field (part of a cache key)"; exit 1; }
+              ids=$(awk -F'\t' -v m="$MATCH" 'index($2, m) {print $1}' caches.tsv) ;;
+            "delete all game-files caches") ids=$(awk -F'\t' '$2 ~ /^game-/ {print $1}' caches.tsv) ;;
+            "delete all shader caches")     ids=$(awk -F'\t' '$2 ~ /^shader-/ {print $1}' caches.tsv) ;;
+            "delete everything")            ids=$(awk -F'\t' '{print $1}' caches.tsv) ;;
+            *) echo "::error::unknown mode '$MODE'"; exit 1 ;;
+          esac
+
+          if [ -z "$ids" ]; then echo "::notice::Nothing matched, nothing deleted."; exit 0; fi
+          n=0
+          for id in $ids; do
+            key=$(awk -F'\t' -v i="$id" '$1 == i {print $2}' caches.tsv)
+            gh api -X DELETE "repos/$REPO/actions/caches/$id" --silent && echo "deleted $id  $key" && n=$((n + 1))
+          done
+          echo "Deleted $n cache entr$([ "$n" = 1 ] && echo y || echo ies)."
+          {
+            echo "### Cache entries"
+            echo "Mode: **$MODE**${MATCH:+ (match: \`$MATCH\`)} — deleted **$n** of $total."
+          } >> "$GITHUB_STEP_SUMMARY"
